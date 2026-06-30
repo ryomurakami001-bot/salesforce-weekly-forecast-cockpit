@@ -21,6 +21,7 @@ COLUMN_ALIASES = {
     "フェーズ": ["フェーズ", "Stage", "商談フェーズ"],
     "フェーズ滞在期間": ["フェーズ滞在期間", "フェーズ滞在日数", "Stage Age"],
     "商談日数": ["商談日数", "案件経過日数", "Age"],
+    "初回商談日": ["【初回商談】日付", "初回商談日", "初回商談日付", "First Meeting Date"],
     "メイン競合": ["メイン競合", "競合"],
     "主リードソース": ["主リードソース", "リードソース", "Lead Source"],
     "商談所有者": ["商談所有者", "商談 所有者", "Opportunity Owner", "所有者"],
@@ -34,6 +35,7 @@ OPTIONAL_DEFAULTS = {
     "次回アクション日": pd.NaT,
     "フェーズ": "",
     "フェーズ滞在期間": pd.NA,
+    "初回商談日": pd.NaT,
 }
 
 # 上から先に一致したルールを採用する。自社運用に合わせてここだけ変更可能。
@@ -50,6 +52,7 @@ FORECAST_WEIGHTS = {"commit": 0.90, "確約": 0.90, "best case": 0.60, "最善":
 CLOSED_LOST_PATTERN = r"失注|closed lost|見送り|消滅"
 SCENARIO_ORDER = {"min": 0, "conservative": 1, "max": 2, "除外": 99}
 MONTHLY_TARGETS = {
+    "2026-06": 0,
     "2026-07": 50_000,
     "2026-08": 100_000,
     "2026-09": 130_000,
@@ -191,7 +194,7 @@ def clean_salesforce_export(df: pd.DataFrame, today: Optional[date] = None) -> t
 
     cleaned["注力案件"] = cleaned["注力案件"].map(_flag)
     cleaned["商談MRR"] = _money(cleaned["商談MRR"])
-    for col in ("Close Date", "次回アクション日"):
+    for col in ("Close Date", "次回アクション日", "初回商談日"):
         cleaned[col] = pd.to_datetime(cleaned[col], errors="coerce")
     cleaned["フェーズ滞在期間"] = pd.to_numeric(cleaned["フェーズ滞在期間"], errors="coerce")
     cleaned = cleaned[cleaned["商談名"].notna() & cleaned["商談名"].astype(str).str.strip().ne("")].copy()
@@ -259,13 +262,28 @@ def prepare_scenario_deals(cleaned: pd.DataFrame) -> pd.DataFrame:
     """案件単位で人が見込みを判断するための編集用テーブルを作る。"""
     cols = [
         "商談名", "商談MRR", "Close Date", "注力案件", "フェーズ",
-        "次回アクション日", "次のステップ & 状況", "リスク理由",
+        "初回商談日", "次回アクション日", "次のステップ & 状況", "リスク理由",
     ]
     cols = [c for c in cols if c in cleaned.columns]
-    deals = cleaned[cols].copy().sort_values(["Close Date", "商談MRR"], ascending=[True, False])
+    # 初回商談を終えていない案件は着地シナリオに混ぜず、Pipelineとして別集計する。
+    deals = cleaned.loc[cleaned["初回商談日"].notna(), cols].copy().sort_values(["Close Date", "商談MRR"], ascending=[True, False])
     deals.insert(0, "見込み区分", deals["注力案件"].map({1: "min", 0: "max"}).fillna("max"))
     deals.insert(1, "判断メモ", "")
     return deals.reset_index(drop=True)
+
+
+def calculate_pipeline(cleaned: pd.DataFrame, report_date: date) -> dict[str, float | int]:
+    pipeline = cleaned[cleaned["初回商談日"].isna()].copy()
+    close_period = pipeline["Close Date"].dt.to_period("M")
+    current_period = pd.Timestamp(report_date).to_period("M")
+    quarter = current_period.asfreq("Q")
+    in_quarter = close_period.map(lambda p: p.asfreq("Q") if pd.notna(p) else pd.NaT) == quarter
+    return {
+        "件数": int(len(pipeline)),
+        "全体MRR": float(pipeline["商談MRR"].sum()),
+        "今月MRR": float(pipeline.loc[close_period == current_period, "商談MRR"].sum()),
+        "四半期MRR": float(pipeline.loc[in_quarter, "商談MRR"].sum()),
+    }
 
 
 def performance_rating(achievement: float | None) -> str:
