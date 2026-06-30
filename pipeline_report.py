@@ -48,6 +48,12 @@ PHASE_RULES = [
 ]
 FORECAST_WEIGHTS = {"commit": 0.90, "確約": 0.90, "best case": 0.60, "最善": 0.60, "pipeline": 0.30, "パイプライン": 0.30, "omitted": 0.00, "除外": 0.00}
 CLOSED_LOST_PATTERN = r"失注|closed lost|見送り|消滅"
+SCENARIO_ORDER = {"min": 0, "conservative": 1, "max": 2, "除外": 99}
+MONTHLY_TARGETS = {
+    "2026-07": 50_000,
+    "2026-08": 100_000,
+    "2026-09": 130_000,
+}
 
 
 @dataclass
@@ -249,10 +255,103 @@ def build_report(path_or_buffer, today: Optional[date] = None) -> ReportResult:
     return ReportResult(raw, cleaned, monthly, focus, action, risks, _answer_cards(cleaned, today), warnings)
 
 
-def export_excel(result: ReportResult, output: str | Path | BinaryIO) -> str | Path | BinaryIO:
+def prepare_scenario_deals(cleaned: pd.DataFrame) -> pd.DataFrame:
+    """案件単位で人が見込みを判断するための編集用テーブルを作る。"""
+    cols = [
+        "商談名", "商談MRR", "Close Date", "注力案件", "フェーズ",
+        "次回アクション日", "次のステップ & 状況", "リスク理由",
+    ]
+    cols = [c for c in cols if c in cleaned.columns]
+    deals = cleaned[cols].copy().sort_values(["Close Date", "商談MRR"], ascending=[True, False])
+    deals.insert(0, "見込み区分", deals["注力案件"].map({1: "min", 0: "max"}).fillna("max"))
+    deals.insert(1, "判断メモ", "")
+    return deals.reset_index(drop=True)
+
+
+def performance_rating(achievement: float | None) -> str:
+    if achievement is None or pd.isna(achievement):
+        return "－"
+    if achievement >= 150:
+        return "5"
+    if achievement >= 120:
+        return "4"
+    if achievement >= 100:
+        return "3"
+    if achievement >= 65:
+        return "2"
+    return "1候補"
+
+
+def calculate_scenario_forecast(
+    deals: pd.DataFrame,
+    monthly_targets: Optional[dict[str, float]] = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """案件の見込み区分から月次・四半期のmin/conservative/maxを算出する。"""
+    targets = monthly_targets or MONTHLY_TARGETS
+    work = deals.copy()
+    work["商談MRR"] = pd.to_numeric(work["商談MRR"], errors="coerce").fillna(0).clip(lower=0)
+    work["Close Date"] = pd.to_datetime(work["Close Date"], errors="coerce")
+    work["Close Month"] = work["Close Date"].dt.to_period("M").astype("string")
+    work["見込み区分"] = work["見込み区分"].where(work["見込み区分"].isin(SCENARIO_ORDER), "max")
+
+    rows = []
+    months = sorted(set(work["Close Month"].dropna().tolist()) | set(targets))
+    for month in months:
+        month_deals = work[work["Close Month"] == month]
+        min_value = month_deals.loc[month_deals["見込み区分"] == "min", "商談MRR"].sum()
+        conservative_value = month_deals.loc[month_deals["見込み区分"].isin(["min", "conservative"]), "商談MRR"].sum()
+        max_value = month_deals.loc[month_deals["見込み区分"].isin(["min", "conservative", "max"]), "商談MRR"].sum()
+        target = float(targets.get(month, 0))
+        achievement = conservative_value / target * 100 if target else None
+        rows.append({
+            "月": month,
+            "min": float(min_value),
+            "conservative": float(conservative_value),
+            "max": float(max_value),
+            "目標": target,
+            "目標対比(conservative)": achievement,
+            "評価": performance_rating(achievement),
+        })
+    monthly = pd.DataFrame(rows)
+    if monthly.empty:
+        return monthly, pd.DataFrame(columns=["四半期", "min", "conservative", "max", "目標", "目標対比(conservative)", "評価"])
+    monthly["四半期"] = pd.PeriodIndex(monthly["月"], freq="M").asfreq("Q").astype(str)
+    quarterly = monthly.groupby("四半期", as_index=False).agg({"min": "sum", "conservative": "sum", "max": "sum", "目標": "sum"})
+    quarterly["目標対比(conservative)"] = quarterly.apply(
+        lambda r: r["conservative"] / r["目標"] * 100 if r["目標"] else None, axis=1
+    )
+    quarterly["評価"] = quarterly["目標対比(conservative)"].map(performance_rating)
+    return monthly, quarterly
+
+
+def _safe_excel_width(series: pd.Series, column_name: object) -> int:
+    """空列・NaN・pandasの版差があっても必ず有効なExcel列幅を返す。"""
+    minimum = max(len(str(column_name)) + 4, 12)
+    if series.empty:
+        return min(minimum, 42)
+    lengths = series.map(lambda value: len(str(value)) if pd.notna(value) else 0)
+    quantile = pd.to_numeric(lengths, errors="coerce").dropna().quantile(0.9)
+    content_width = int(quantile) + 2 if pd.notna(quantile) else minimum
+    return min(max(minimum, content_width), 42)
+
+
+def export_excel(
+    result: ReportResult,
+    output: str | Path | BinaryIO,
+    scenario_deals: Optional[pd.DataFrame] = None,
+    monthly_scenarios: Optional[pd.DataFrame] = None,
+    quarterly_scenarios: Optional[pd.DataFrame] = None,
+) -> str | Path | BinaryIO:
     with pd.ExcelWriter(output, engine="xlsxwriter", datetime_format="yyyy-mm-dd", date_format="yyyy-mm-dd") as writer:
         pd.DataFrame([result.answer_cards]).to_excel(writer, sheet_name="Summary", index=False)
-        sheets = [("Monthly Forecast", result.monthly_forecast), ("Focus Deals", result.focus_deals), ("Next Actions", result.action_list), ("Risks", result.risks), ("Cleaned Data", result.cleaned)]
+        sheets = [("Monthly Forecast", result.monthly_forecast)]
+        if monthly_scenarios is not None:
+            sheets.append(("Scenario Monthly", monthly_scenarios))
+        if quarterly_scenarios is not None:
+            sheets.append(("Scenario Quarterly", quarterly_scenarios))
+        if scenario_deals is not None:
+            sheets.append(("Deal Judgement", scenario_deals))
+        sheets.extend([("Focus Deals", result.focus_deals), ("Next Actions", result.action_list), ("Risks", result.risks), ("Cleaned Data", result.cleaned)])
         for name, df in sheets:
             df.to_excel(writer, sheet_name=name, index=False)
         workbook = writer.book
@@ -265,7 +364,7 @@ def export_excel(result: ReportResult, output: str | Path | BinaryIO) -> str | P
             ws.autofilter(0, 0, max(len(df), 1), max(len(df.columns) - 1, 0))
             for i, col in enumerate(df.columns):
                 ws.write(0, i, col, header)
-                width = min(max(len(str(col)) + 4, int(df[col].astype(str).str.len().quantile(.9) + 2) if len(df) else 12), 42)
+                width = _safe_excel_width(df[col], col)
                 fmt = money if "MRR" in str(col) else date_fmt if ("Date" in str(col) or str(col).endswith("日")) else None
                 ws.set_column(i, i, width, fmt)
     return output
