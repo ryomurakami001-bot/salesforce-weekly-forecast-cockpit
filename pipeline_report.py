@@ -272,12 +272,12 @@ def prepare_scenario_deals(cleaned: pd.DataFrame) -> pd.DataFrame:
     return deals.reset_index(drop=True)
 
 
-def calculate_pipeline(cleaned: pd.DataFrame, report_date: date) -> dict[str, float | int]:
+def calculate_pipeline(cleaned: pd.DataFrame, report_date: date, quarter: Optional[str] = None) -> dict[str, float | int]:
     pipeline = cleaned[cleaned["初回商談日"].isna()].copy()
     close_period = pipeline["Close Date"].dt.to_period("M")
     current_period = pd.Timestamp(report_date).to_period("M")
-    quarter = current_period.asfreq("Q")
-    in_quarter = close_period.map(lambda p: p.asfreq("Q") if pd.notna(p) else pd.NaT) == quarter
+    target_quarter = pd.Period(quarter, freq="Q") if quarter else current_period.asfreq("Q")
+    in_quarter = close_period.map(lambda p: p.asfreq("Q") if pd.notna(p) else pd.NaT) == target_quarter
     return {
         "件数": int(len(pipeline)),
         "全体MRR": float(pipeline["商談MRR"].sum()),

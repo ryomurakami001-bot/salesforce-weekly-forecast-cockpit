@@ -88,7 +88,6 @@ edited = st.data_editor(
 )
 st.session_state["deal_judgements"] = edited
 monthly, quarterly = calculate_scenario_forecast(edited)
-pipeline = calculate_pipeline(result.cleaned, report_date)
 
 current_month = pd.Timestamp(report_date).strftime("%Y-%m")
 current_quarter = str(pd.Timestamp(report_date).to_period("Q"))
@@ -96,9 +95,10 @@ month_row = monthly[monthly["月"] == current_month]
 month_row = month_row.iloc[0] if not month_row.empty else pd.Series({"min": 0, "conservative": 0, "max": 0, "目標": 0})
 quarter_row = quarterly[quarterly["四半期"] == current_quarter]
 target_quarters = quarterly[quarterly["目標"] > 0]
-if quarter_row.empty and not target_quarters.empty:
+if (quarter_row.empty or float(quarter_row.iloc[0]["目標"]) == 0) and not target_quarters.empty:
     quarter_row = target_quarters.iloc[[0]]
 quarter_row = quarter_row.iloc[0] if not quarter_row.empty else pd.Series({"四半期": current_quarter, "min": 0, "conservative": 0, "max": 0, "目標": 0, "目標対比(conservative)": None, "評価": "－"})
+pipeline = calculate_pipeline(result.cleaned, report_date, str(quarter_row.get("四半期", current_quarter)))
 
 def range_card(title, period, row):
     target = float(row.get("目標", 0))
