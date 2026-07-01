@@ -75,13 +75,13 @@ st.subheader("案件別の着地判断")
 view_choice = st.radio("表示する見込み", ["max", "min", "conservative", "すべて"], horizontal=True, label_visibility="collapsed")
 full_deals = st.session_state["deal_judgements"].copy()
 if view_choice == "すべて":
-    view = full_deals.sort_values(["見込み区分", "商談MRR"], ascending=[True, True])
+    view = full_deals.sort_values(["見込み区分", "商談MRR"], ascending=[True, False])
 else:
-    view = full_deals[full_deals["見込み区分"] == view_choice].sort_values("商談MRR", ascending=True)
+    view = full_deals[full_deals["見込み区分"] == view_choice].sort_values("商談MRR", ascending=False)
 if view_choice == "max":
-    st.markdown('<div class="max-notice">🟣 MAX案件｜上振れ候補をMRRの昇順で表示</div>', unsafe_allow_html=True)
+    st.markdown('<div class="max-notice">🟣 MAX案件｜上振れ候補をMRRの降順で表示</div>', unsafe_allow_html=True)
 elif view_choice == "min":
-    st.markdown('<div class="max-notice" style="border-color:#138a5b;background:#effaf5;color:#08764b">🟢 MIN案件｜最低着地をMRRの昇順で表示</div>', unsafe_allow_html=True)
+    st.markdown('<div class="max-notice" style="border-color:#138a5b;background:#effaf5;color:#08764b">🟢 MIN案件｜最低着地をMRRの降順で表示</div>', unsafe_allow_html=True)
 
 edited_view = st.data_editor(
     view, key=f"deal_editor_{view_choice}", use_container_width=True, hide_index=True,
@@ -163,7 +163,7 @@ if pipeline_choice == "クオーター":
     mask = pipeline_deals["Close Date"].dt.to_period("Q").astype(str) == display_q
 else:
     mask = pipeline_deals["Close Date"].dt.to_period("M").astype(str) == selected_pipeline["月"]
-pview = pipeline_deals.loc[mask, [c for c in ["商談名", "商談MRR", "Close Date", "フェーズ", "次のステップ & 状況"] if c in pipeline_deals.columns]].sort_values("商談MRR", ascending=True)
+pview = pipeline_deals.loc[mask, [c for c in ["商談名", "商談MRR", "Close Date", "フェーズ", "次のステップ & 状況"] if c in pipeline_deals.columns]].sort_values("商談MRR", ascending=False)
 def highlight_large_pipeline(row):
     styles = pd.Series("", index=row.index)
     if row.get("商談MRR", 0) > 100_000:
