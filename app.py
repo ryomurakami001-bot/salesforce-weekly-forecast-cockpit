@@ -13,6 +13,7 @@ import pipeline_report as _pipeline_report
 _pipeline_report = importlib.reload(_pipeline_report)
 build_report = _pipeline_report.build_report
 calculate_meeting_activity = _pipeline_report.calculate_meeting_activity
+meeting_activity_deals = _pipeline_report.meeting_activity_deals
 calculate_pipeline_months = _pipeline_report.calculate_pipeline_months
 calculate_scenario_forecast = _pipeline_report.calculate_scenario_forecast
 export_excel = _pipeline_report.export_excel
@@ -106,6 +107,7 @@ st.session_state["deal_judgements"] = full_deals
 
 monthly, quarterly = calculate_scenario_forecast(full_deals)
 activity = calculate_meeting_activity(result.cleaned, report_date)
+valid_meeting_deals, _ = meeting_activity_deals(result.cleaned, report_date)
 current_period = pd.Timestamp(report_date).to_period("M")
 current_q = current_period.asfreq("Q")
 target_qs = quarterly[quarterly["目標"] > 0]
@@ -144,6 +146,15 @@ with top:
     x1, x2, x3 = st.columns(3)
     x1.markdown(f'<div class="card"><div class="card-title">今月の商談件数<span class="period">{current_period}</span></div><div class="big">{activity["商談件数"]}件</div><div class="sub">有効商談＋失注</div></div>', unsafe_allow_html=True)
     x2.markdown(f'<div class="card"><div class="card-title">有効商談</div><div class="big {r_class}">{activity["有効商談数"]}件 <span style="font-size:1.25rem">（{r_text}）</span></div><div class="sub">商談実施済みのうち失注していない企業</div></div>', unsafe_allow_html=True)
+    with x2.popover("有効商談の対象案件を見る", use_container_width=True):
+        valid_cols = [c for c in ["商談名", "商談MRR", "フェーズ", "初回商談日", "Close Date", "次のステップ & 状況"] if c in valid_meeting_deals.columns]
+        valid_view = valid_meeting_deals[valid_cols].sort_values("商談MRR", ascending=False)
+        st.dataframe(
+            valid_view,
+            use_container_width=True,
+            hide_index=True,
+            column_config={"商談MRR": st.column_config.NumberColumn("MRR", format="¥%d")},
+        )
     x3.markdown(f'<div class="card"><div class="card-title">失注数</div><div class="big bad">{activity["失注数"]}件</div><div class="sub">今月商談を実施し、失注となった企業</div></div>', unsafe_allow_html=True)
 
     st.subheader("Pipeline")
