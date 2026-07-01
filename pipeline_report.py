@@ -319,11 +319,16 @@ def calculate_pipeline_months(cleaned: pd.DataFrame, report_date: date, quarter:
 def calculate_meeting_activity(cleaned: pd.DataFrame, report_date: date) -> dict[str, float | int]:
     month = pd.Timestamp(report_date).to_period("M")
     meeting_month = cleaned["初回商談日"].dt.to_period("M")
-    meetings = cleaned[meeting_month == month]
-    valid = meetings[~meetings["失注"]]
-    total = int(len(meetings))
+    meetings = cleaned[meeting_month == month].copy()
+    not_card = ~meetings["商談名"].astype("string").str.contains("カード申込", na=False)
+    phase_one = meetings["フェーズ"].astype("string").str.match(
+        r"^\s*(?:フェーズ\s*)?0?[1１](?:\D|$)", case=False, na=False
+    )
+    lost = meetings[meetings["失注"] & not_card]
+    valid = meetings[~meetings["失注"] & ~phase_one & not_card]
     valid_count = int(len(valid))
-    lost_count = int(meetings["失注"].sum())
+    lost_count = int(len(lost))
+    total = valid_count + lost_count
     return {
         "商談件数": total,
         "有効商談数": valid_count,
