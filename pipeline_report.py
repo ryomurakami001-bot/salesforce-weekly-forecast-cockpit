@@ -201,9 +201,12 @@ def clean_salesforce_export(df: pd.DataFrame, today: Optional[date] = None) -> t
 
     phase_text = cleaned["フェーズ"].astype("string")
     lost = phase_text.str.contains(CLOSED_LOST_PATTERN, case=False, regex=True, na=False)
+    cleaned["失注"] = lost
+    cleaned["カード申込"] = cleaned["商談名"].astype("string").str.contains("カード申込", na=False)
     if lost.any():
-        warnings.append(f"失注・見送り {int(lost.sum())}件を見込み集計から除外しました。")
-    cleaned = cleaned[~lost & (cleaned["商談MRR"] > 0)].copy()
+        warnings.append(f"失注・見送り {int(lost.sum())}件は活動実績に残し、着地見込みから除外しました。")
+    # 活動実績の分母に使うため失注案件は保持する。カード申込の重複行のみ除外。
+    cleaned = cleaned[~cleaned["カード申込"]].copy()
 
     cleaned["Close Month"] = cleaned["Close Date"].dt.to_period("M").astype("string")
     cleaned["重み"] = cleaned.apply(_weight, axis=1)
@@ -222,6 +225,7 @@ def clean_salesforce_export(df: pd.DataFrame, today: Optional[date] = None) -> t
 
 
 def _answer_cards(cleaned: pd.DataFrame, today: date) -> dict[str, float | int | str]:
+    cleaned = cleaned[(~cleaned["失注"]) & (cleaned["商談MRR"] > 0)]
     today_ts = pd.Timestamp(today)
     current_period = today_ts.to_period("M")
     close_period = cleaned["Close Date"].dt.to_period("M")
@@ -244,17 +248,18 @@ def build_report(path_or_buffer, today: Optional[date] = None) -> ReportResult:
     today = today or date.today()
     raw = _read_any(path_or_buffer)
     cleaned, warnings = clean_salesforce_export(raw, today=today)
-    monthly = (cleaned.dropna(subset=["Close Date"]).groupby("Close Month", as_index=False)
+    active = cleaned[(~cleaned["失注"]) & (cleaned["商談MRR"] > 0)].copy()
+    monthly = (active.dropna(subset=["Close Date"]).groupby("Close Month", as_index=False)
         .agg(件数=("商談名", "count"), MRR合計=("商談MRR", "sum"), 注力案件MRR=("商談MRR", lambda s: s[cleaned.loc[s.index, "注力案件"] == 1].sum()), 加重MRR=("加重MRR", "sum"))
         .sort_values("Close Month"))
     monthly["通常案件MRR"] = monthly["MRR合計"] - monthly["注力案件MRR"]
 
     display_cols = ["商談名", "商談MRR", "加重MRR", "Close Date", "フェーズ", "次回アクション日", "アクション状態", "リスク理由", "推奨アクション", "次のステップ & 状況", "商談所有者", "メイン競合"]
     display_cols = [c for c in display_cols if c in cleaned.columns]
-    focus = cleaned.loc[cleaned["注力案件"] == 1, display_cols].sort_values(["Close Date", "商談MRR"], ascending=[True, False])
+    focus = active.loc[active["注力案件"] == 1, display_cols].sort_values(["Close Date", "商談MRR"], ascending=[True, False])
     order = {"期限超過": 0, "未設定": 1, "今週対応": 2, "今週以降": 3}
-    action = cleaned[display_cols].assign(_sort=cleaned["アクション状態"].map(order)).sort_values(["_sort", "次回アクション日", "商談MRR"], ascending=[True, True, False]).drop(columns="_sort")
-    risks = cleaned.loc[cleaned["リスク理由"] != "通常", display_cols].sort_values(["商談MRR"], ascending=False)
+    action = active[display_cols].assign(_sort=active["アクション状態"].map(order)).sort_values(["_sort", "次回アクション日", "商談MRR"], ascending=[True, True, False]).drop(columns="_sort")
+    risks = active.loc[active["リスク理由"] != "通常", display_cols].sort_values(["商談MRR"], ascending=False)
     return ReportResult(raw, cleaned, monthly, focus, action, risks, _answer_cards(cleaned, today), warnings)
 
 
@@ -266,14 +271,17 @@ def prepare_scenario_deals(cleaned: pd.DataFrame) -> pd.DataFrame:
     ]
     cols = [c for c in cols if c in cleaned.columns]
     # 初回商談を終えていない案件は着地シナリオに混ぜず、Pipelineとして別集計する。
-    deals = cleaned.loc[cleaned["初回商談日"].notna(), cols].copy().sort_values(["Close Date", "商談MRR"], ascending=[True, False])
-    deals.insert(0, "見込み区分", deals["注力案件"].map({1: "min", 0: "max"}).fillna("max"))
-    deals.insert(1, "判断メモ", "")
+    eligible = cleaned["初回商談日"].notna() & ~cleaned["失注"] & (cleaned["商談MRR"] > 0)
+    deals = cleaned.loc[eligible, cols].copy().sort_values(["Close Date", "商談MRR"], ascending=[True, False])
+    deals.insert(0, "案件ID", deals.index.astype(str))
+    deals.insert(1, "見込み区分", deals["注力案件"].map({1: "min", 0: "max"}).fillna("max"))
+    deals.insert(2, "判断メモ", "")
     return deals.reset_index(drop=True)
 
 
 def calculate_pipeline(cleaned: pd.DataFrame, report_date: date, quarter: Optional[str] = None) -> dict[str, float | int]:
-    pipeline = cleaned[cleaned["初回商談日"].isna()].copy()
+    """初回商談済みかつ失注していない案件をPipelineとして集計する。"""
+    pipeline = cleaned[cleaned["初回商談日"].notna() & ~cleaned["失注"] & (cleaned["商談MRR"] > 0)].copy()
     close_period = pipeline["Close Date"].dt.to_period("M")
     current_period = pd.Timestamp(report_date).to_period("M")
     target_quarter = pd.Period(quarter, freq="Q") if quarter else current_period.asfreq("Q")
@@ -283,6 +291,40 @@ def calculate_pipeline(cleaned: pd.DataFrame, report_date: date, quarter: Option
         "全体MRR": float(pipeline["商談MRR"].sum()),
         "今月MRR": float(pipeline.loc[close_period == current_period, "商談MRR"].sum()),
         "四半期MRR": float(pipeline.loc[in_quarter, "商談MRR"].sum()),
+    }
+
+
+def calculate_pipeline_months(cleaned: pd.DataFrame, report_date: date, quarter: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    pipeline = cleaned[cleaned["初回商談日"].notna() & ~cleaned["失注"] & (cleaned["商談MRR"] > 0)].copy()
+    pipeline["月"] = pipeline["Close Date"].dt.to_period("M").astype("string")
+    current = pd.Timestamp(report_date).to_period("M")
+    labels = [("今月", current), ("来月", current + 1), ("再来月", current + 2)]
+    rows = []
+    for label, period in labels:
+        subset = pipeline[pipeline["月"] == str(period)]
+        target = float(MONTHLY_TARGETS.get(str(period), 0))
+        value = float(subset["商談MRR"].sum())
+        rows.append({"期間": label, "月": str(period), "MRR": value, "目標": target, "達成率": value / target * 100 if target else None, "件数": int(len(subset))})
+    target_q = pd.Period(quarter, freq="Q")
+    q_mask = pipeline["Close Date"].dt.to_period("Q") == target_q
+    q_subset = pipeline[q_mask]
+    q_target = float(sum(value for month, value in MONTHLY_TARGETS.items() if pd.Period(month, freq="M").asfreq("Q") == target_q))
+    q_value = float(q_subset["商談MRR"].sum())
+    rows.append({"期間": "クオーター", "月": str(target_q), "MRR": q_value, "目標": q_target, "達成率": q_value / q_target * 100 if q_target else None, "件数": int(len(q_subset))})
+    return pd.DataFrame(rows), pipeline
+
+
+def calculate_meeting_activity(cleaned: pd.DataFrame, report_date: date) -> dict[str, float | int]:
+    month = pd.Timestamp(report_date).to_period("M")
+    meeting_month = cleaned["初回商談日"].dt.to_period("M")
+    meetings = cleaned[meeting_month == month]
+    valid = meetings[~meetings["失注"]]
+    total = int(len(meetings))
+    valid_count = int(len(valid))
+    return {
+        "商談件数": total,
+        "有効商談数": valid_count,
+        "有効商談割合": valid_count / total * 100 if total else None,
     }
 
 
