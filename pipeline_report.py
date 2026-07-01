@@ -8,6 +8,8 @@ from typing import BinaryIO, Optional
 
 import pandas as pd
 
+# Streamlit Cloud deployment marker: 2026-07-01 forecast helpers
+
 
 COLUMN_ALIASES = {
     "商談名": ["商談名", "Opportunity Name", "案件名"],
