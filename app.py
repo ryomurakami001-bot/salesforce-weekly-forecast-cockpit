@@ -26,7 +26,7 @@ st.markdown("""
   .card {border:1px solid #dfe3e8; border-radius:12px; padding:17px 19px; background:#fff; min-height:145px;}
   .card-title {font-size:.85rem; color:#52606d; font-weight:800; margin-bottom:10px;}
   .period {font-size:.76rem; color:#8491a3; margin-left:6px; font-weight:500;}
-  .big {font-size:2rem; font-weight:850; line-height:1.15; color:#101828;}
+  .big {font-size:2rem; font-weight:850; line-height:1.15; color:#101828; white-space:nowrap;}
   .sub {font-size:.83rem; color:#667085; margin-top:6px;}
   .range-line {display:flex; justify-content:space-between; align-items:baseline; padding:5px 0; border-bottom:1px solid #f1f3f5;}
   .range-line:last-child {border-bottom:none;}
@@ -122,7 +122,7 @@ def scenario_card(title, period, row):
     target = float(row.get("目標", 0))
     target_text = f" / ¥{target:,.0f}" if target else " / 目標未設定"
     lines = []
-    for key, label in [("min", "MIN"), ("conservative", "CONSERVATIVE"), ("max", "MAX")]:
+    for key, label in [("min", "MIN"), ("conservative", "CON."), ("max", "MAX")]:
         value = float(row.get(key, 0))
         value_class = key if target > 0 and value >= target else "not-achieved"
         lines.append(f'<div class="range-line"><span class="range-label {key}">{label}</span><span class="range-value {value_class}">¥{value:,.0f}<span class="target">{target_text}</span></span></div>')
@@ -141,16 +141,15 @@ with top:
     valid_ratio = activity["有効商談割合"]
     r_text = "－" if valid_ratio is None else f"{valid_ratio:.0f}%"
     r_class = attainment_class(valid_ratio)
-    x1, x2 = st.columns(2)
-    x1.markdown(f'<div class="card"><div class="card-title">今月の商談件数<span class="period">{current_period}</span></div><div class="big">{activity["商談件数"]}件</div><div class="sub">初回商談を実施した企業数（失注を含む）</div></div>', unsafe_allow_html=True)
+    x1, x2, x3 = st.columns(3)
+    x1.markdown(f'<div class="card"><div class="card-title">今月の商談件数<span class="period">{current_period}</span></div><div class="big">{activity["商談件数"]}件</div><div class="sub">有効商談＋失注</div></div>', unsafe_allow_html=True)
     x2.markdown(f'<div class="card"><div class="card-title">有効商談</div><div class="big {r_class}">{activity["有効商談数"]}件 <span style="font-size:1.25rem">（{r_text}）</span></div><div class="sub">商談実施済みのうち失注していない企業</div></div>', unsafe_allow_html=True)
+    x3.markdown(f'<div class="card"><div class="card-title">失注数</div><div class="big bad">{activity["失注数"]}件</div><div class="sub">今月商談を実施し、失注となった企業</div></div>', unsafe_allow_html=True)
 
     st.subheader("Pipeline")
     pcols = st.columns(4)
     for col, (_, row) in zip(pcols, pipeline_summary.iterrows()):
-        ratio = row["達成率"]
-        ratio_text = "－" if pd.isna(ratio) else f"{ratio:.0f}%"
-        col.markdown(f'<div class="card"><div class="card-title">{row["期間"]}<span class="period">{row["月"]}</span></div><div class="big pipeline">¥{row["MRR"]:,.0f}</div><div class="sub">{row["件数"]}件　目標 ¥{row["目標"]:,.0f}（<b class="{attainment_class(ratio)}">{ratio_text}</b>）</div></div>', unsafe_allow_html=True)
+        col.markdown(f'<div class="card"><div class="card-title">{row["期間"]}<span class="period">{row["月"]}</span></div><div class="big pipeline">¥{row["MRR"]:,.0f}</div><div class="sub">{row["件数"]}件</div></div>', unsafe_allow_html=True)
 
     st.subheader("着地レンジ")
     rcols = st.columns(4)
@@ -165,18 +164,26 @@ if pipeline_choice == "クオーター":
 else:
     mask = pipeline_deals["Close Date"].dt.to_period("M").astype(str) == selected_pipeline["月"]
 pview = pipeline_deals.loc[mask, [c for c in ["商談名", "商談MRR", "Close Date", "フェーズ", "次のステップ & 状況"] if c in pipeline_deals.columns]].sort_values("商談MRR", ascending=True)
-st.dataframe(pview, use_container_width=True, hide_index=True)
+def highlight_large_pipeline(row):
+    styles = pd.Series("", index=row.index)
+    if row.get("商談MRR", 0) > 100_000:
+        for column in ["商談名", "商談MRR"]:
+            if column in styles.index:
+                styles[column] = "color:#d92d20;font-weight:800"
+    return styles
+st.dataframe(pview.style.apply(highlight_large_pipeline, axis=1).format({"商談MRR": "¥{:,.0f}"}), use_container_width=True, hide_index=True)
 
 st.subheader("月次：目標達成率と着地レンジ")
 st.caption("縦棒は目標達成率（150%で上限表示）。金額差が大きくても、達成度を同じ尺度で比較できます。月をクリックすると案件を絞り込みます。")
-long = monthly.melt(id_vars=["月", "目標"], value_vars=["min", "conservative", "max"], var_name="シナリオ", value_name="MRR")
+chart_monthly = monthly[monthly["月"] != "2026-06"].copy()
+long = chart_monthly.melt(id_vars=["月", "目標"], value_vars=["min", "max"], var_name="シナリオ", value_name="MRR")
 long["達成率"] = long.apply(lambda r: r["MRR"] / r["目標"] * 100 if r["目標"] else 0, axis=1)
 long["表示達成率"] = long["達成率"].clip(upper=150)
 select_month = alt.selection_point(fields=["月"], name="month_select", on="click", clear="dblclick")
-colors = alt.Scale(domain=["min", "conservative", "max"], range=["#17a673", "#2478e5", "#8b5cf6"])
+colors = alt.Scale(domain=["min", "max"], range=["#17a673", "#8b5cf6"])
 bars = alt.Chart(long).mark_bar(size=28, cornerRadiusTopLeft=5, cornerRadiusTopRight=5).encode(
-    x=alt.X("月:N", sort=list(monthly["月"]), title=None, axis=alt.Axis(labelAngle=0, labelFontSize=13, labelFontWeight="bold")),
-    xOffset=alt.XOffset("シナリオ:N", sort=["min", "conservative", "max"]),
+    x=alt.X("月:N", sort=list(chart_monthly["月"]), title=None, axis=alt.Axis(labelAngle=0, labelFontSize=13, labelFontWeight="bold")),
+    xOffset=alt.XOffset("シナリオ:N", sort=["min", "max"]),
     y=alt.Y("表示達成率:Q", title="目標達成率", scale=alt.Scale(domain=[0, 150]), axis=alt.Axis(labelExpr="datum.value + '%'", gridColor="#e9edf2")),
     color=alt.Color("シナリオ:N", scale=colors, legend=alt.Legend(orient="top", title=None)),
     opacity=alt.condition(select_month, alt.value(1), alt.value(.86)),
@@ -192,7 +199,7 @@ try:
 except (AttributeError, KeyError, IndexError, TypeError):
     pass
 if not selected_month:
-    active_months = monthly.loc[monthly["max"] > 0, "月"].tolist()
+    active_months = chart_monthly.loc[chart_monthly["max"] > 0, "月"].tolist()
     selected_month = active_months[0] if active_months else str(current_period)
 st.markdown(f"#### {selected_month} の着地案件")
 selected_deals = full_deals[pd.to_datetime(full_deals["Close Date"], errors="coerce").dt.strftime("%Y-%m") == selected_month]
@@ -202,15 +209,25 @@ with st.expander("月次・四半期サマリ"):
     st.dataframe(monthly, use_container_width=True, hide_index=True)
     st.dataframe(quarterly, use_container_width=True, hide_index=True)
 
-tab_action, tab_risk, tab_raw = st.tabs(["次回アクション", "リスク / 停滞", "Cleaned Data"])
+st.subheader("案件フォロー")
+follow_scenario = st.radio("案件区分", ["min", "max"], horizontal=True, label_visibility="collapsed")
+scenario_by_id = full_deals.set_index("案件ID")["見込み区分"].to_dict()
+
+def scenario_view(df):
+    framed = df.copy()
+    framed.insert(0, "見込み区分", framed.index.astype(str).map(scenario_by_id))
+    return framed[framed["見込み区分"] == follow_scenario]
+
+tab_action, tab_risk, tab_raw = st.tabs(["次回アクション", "リスク / 停滞", "案件データ"])
 with tab_action:
     status = st.multiselect("状態", ["期限超過", "未設定", "今週対応", "今週以降"], default=["期限超過", "未設定", "今週対応"])
-    view = result.action_list[result.action_list["アクション状態"].isin(status)] if status else result.action_list
+    action_source = scenario_view(result.action_list)
+    view = action_source[action_source["アクション状態"].isin(status)] if status else action_source
     st.dataframe(view, use_container_width=True, hide_index=True)
 with tab_risk:
-    st.dataframe(result.risks, use_container_width=True, hide_index=True)
+    st.dataframe(scenario_view(result.risks), use_container_width=True, hide_index=True)
 with tab_raw:
-    st.dataframe(result.cleaned, use_container_width=True, hide_index=True)
+    st.dataframe(scenario_view(result.cleaned), use_container_width=True, hide_index=True)
 
 buffer = BytesIO()
 export_excel(result, buffer, scenario_deals=full_deals, monthly_scenarios=monthly, quarterly_scenarios=quarterly)
