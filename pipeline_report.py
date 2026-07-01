@@ -36,6 +36,7 @@ OPTIONAL_DEFAULTS = {
     "フェーズ": "",
     "フェーズ滞在期間": pd.NA,
     "初回商談日": pd.NaT,
+    "主リードソース": "不明",
 }
 
 # 上から先に一致したルールを採用する。自社運用に合わせてここだけ変更可能。
@@ -320,25 +321,20 @@ def meeting_activity_deals(cleaned: pd.DataFrame, report_date: date) -> tuple[pd
     month = pd.Timestamp(report_date).to_period("M")
     meeting_month = cleaned["初回商談日"].dt.to_period("M")
     meetings = cleaned[meeting_month == month].copy()
-    not_card = ~meetings["商談名"].astype("string").str.contains("カード申込", na=False)
-    phase_one = meetings["フェーズ"].astype("string").str.match(
-        r"^\s*(?:フェーズ\s*)?0?[1１](?:\D|$)", case=False, na=False
-    )
-    lost = meetings[meetings["失注"] & not_card]
-    valid = meetings[~meetings["失注"] & ~phase_one & not_card]
-    return valid, lost
+    not_card = ~meetings["商談名"].astype("string").str.contains(r"[_＿]カード申込", regex=True, na=False)
+    scheduled = meetings[not_card]
+    completed = scheduled[scheduled["初回商談日"].dt.date <= report_date]
+    return scheduled, completed
 
 
 def calculate_meeting_activity(cleaned: pd.DataFrame, report_date: date) -> dict[str, float | int]:
-    valid, lost = meeting_activity_deals(cleaned, report_date)
-    valid_count = int(len(valid))
-    lost_count = int(len(lost))
-    total = valid_count + lost_count
+    scheduled, completed = meeting_activity_deals(cleaned, report_date)
+    scheduled_count = int(len(scheduled))
+    completed_count = int(len(completed))
     return {
-        "商談件数": total,
-        "有効商談数": valid_count,
-        "失注数": lost_count,
-        "有効商談割合": valid_count / total * 100 if total else None,
+        "商談予定数": scheduled_count,
+        "商談実施済み数": completed_count,
+        "商談実施率": completed_count / scheduled_count * 100 if scheduled_count else None,
     }
 
 
