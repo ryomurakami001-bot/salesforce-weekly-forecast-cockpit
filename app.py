@@ -107,7 +107,7 @@ st.session_state["deal_judgements"] = full_deals
 
 monthly, quarterly = calculate_scenario_forecast(full_deals)
 activity = calculate_meeting_activity(result.cleaned, report_date)
-valid_meeting_deals, _ = meeting_activity_deals(result.cleaned, report_date)
+scheduled_meeting_deals, completed_meeting_deals = meeting_activity_deals(result.cleaned, report_date)
 current_period = pd.Timestamp(report_date).to_period("M")
 current_q = current_period.asfreq("Q")
 target_qs = quarterly[quarterly["目標"] > 0]
@@ -140,22 +140,23 @@ period_specs = [("今月", current_period, False), ("来月", current_period + 1
 
 with top:
     st.subheader("今月の商談活動")
-    valid_ratio = activity["有効商談割合"]
-    r_text = "－" if valid_ratio is None else f"{valid_ratio:.0f}%"
-    r_class = attainment_class(valid_ratio)
-    x1, x2, x3 = st.columns(3)
-    x1.markdown(f'<div class="card"><div class="card-title">今月の商談件数<span class="period">{current_period}</span></div><div class="big">{activity["商談件数"]}件</div><div class="sub">有効商談＋失注</div></div>', unsafe_allow_html=True)
-    x2.markdown(f'<div class="card"><div class="card-title">有効商談</div><div class="big {r_class}">{activity["有効商談数"]}件 <span style="font-size:1.25rem">（{r_text}）</span></div><div class="sub">商談実施済みのうち失注していない企業</div></div>', unsafe_allow_html=True)
-    with x2.popover("有効商談の対象案件を見る", use_container_width=True):
-        valid_cols = [c for c in ["商談名", "商談MRR", "フェーズ", "初回商談日", "Close Date", "次のステップ & 状況"] if c in valid_meeting_deals.columns]
-        valid_view = valid_meeting_deals[valid_cols].sort_values("商談MRR", ascending=False)
+    completed_ratio = activity["商談実施率"]
+    r_text = "－" if completed_ratio is None else f"{completed_ratio:.0f}%"
+    x1, x2 = st.columns(2)
+    x1.markdown(f'<div class="card"><div class="card-title">今月の商談予定<span class="period">{current_period}</span></div><div class="big">{activity["商談予定数"]}件</div><div class="sub">今月に初回商談日があり、_カード申込を除く</div></div>', unsafe_allow_html=True)
+    with x1.popover("商談予定の対象案件を見る", use_container_width=True):
+        scheduled_cols = [c for c in ["商談名", "商談MRR", "フェーズ", "初回商談日", "主リードソース", "次のステップ & 状況"] if c in scheduled_meeting_deals.columns]
+        st.dataframe(scheduled_meeting_deals[scheduled_cols].sort_values("初回商談日"), use_container_width=True, hide_index=True)
+    x2.markdown(f'<div class="card"><div class="card-title">商談実施済み</div><div class="big good">{activity["商談実施済み数"]}件 <span style="font-size:1.25rem">（{r_text}）</span></div><div class="sub">初回商談日が本日以前で、_カード申込を除く</div></div>', unsafe_allow_html=True)
+    with x2.popover("商談実施済みの対象案件を見る", use_container_width=True):
+        completed_cols = [c for c in ["商談名", "商談MRR", "フェーズ", "初回商談日", "主リードソース", "次のステップ & 状況"] if c in completed_meeting_deals.columns]
+        completed_view = completed_meeting_deals[completed_cols].sort_values("初回商談日", ascending=False)
         st.dataframe(
-            valid_view,
+            completed_view,
             use_container_width=True,
             hide_index=True,
             column_config={"商談MRR": st.column_config.NumberColumn("MRR", format="¥%d")},
         )
-    x3.markdown(f'<div class="card"><div class="card-title">失注数</div><div class="big bad">{activity["失注数"]}件</div><div class="sub">今月商談を実施し、失注となった企業</div></div>', unsafe_allow_html=True)
 
     st.subheader("Pipeline")
     pcols = st.columns(4)
@@ -166,6 +167,36 @@ with top:
     rcols = st.columns(4)
     for col, (label, period, is_q) in zip(rcols, period_specs):
         col.markdown(scenario_card(label, str(period), scenario_row(period, is_q)), unsafe_allow_html=True)
+
+lead_source = result.cleaned[result.cleaned["初回商談日"].notna()].copy()
+lead_source = lead_source[~lead_source["商談名"].astype("string").str.contains(r"[_＿]カード申込", regex=True, na=False)]
+lead_source["月"] = lead_source["初回商談日"].dt.to_period("M").astype(str)
+lead_source["リードソース"] = lead_source["主リードソース"].astype("string").fillna("不明").replace("", "不明")
+lead_monthly = lead_source.groupby(["月", "リードソース"], as_index=False).agg(
+    アポ数=("商談名", "count"),
+    注力案件数=("注力案件", "sum"),
+)
+lead_monthly["注力案件数"] = lead_monthly["注力案件数"].astype(int)
+lead_monthly["表示"] = lead_monthly.apply(lambda r: f'{int(r["アポ数"])} / {int(r["注力案件数"])}', axis=1)
+
+st.subheader("月別：リードソース別アポ・注力案件")
+st.caption("セル内は『アポ数 / 注力案件数』。色が濃いほどアポ数が多いリードソースです。")
+if lead_monthly.empty:
+    st.info("初回商談日とリードソースのある案件がありません。")
+else:
+    heatmap = alt.Chart(lead_monthly).mark_rect(cornerRadius=4).encode(
+        x=alt.X("月:N", title=None, sort=sorted(lead_monthly["月"].unique()), axis=alt.Axis(labelAngle=0)),
+        y=alt.Y("リードソース:N", title=None, sort="-x"),
+        color=alt.Color("アポ数:Q", scale=alt.Scale(scheme="blues"), legend=alt.Legend(title="アポ数")),
+        tooltip=["月:N", "リードソース:N", "アポ数:Q", "注力案件数:Q"],
+    )
+    labels = alt.Chart(lead_monthly).mark_text(fontWeight="bold").encode(
+        x=alt.X("月:N", sort=sorted(lead_monthly["月"].unique())),
+        y=alt.Y("リードソース:N", sort="-x"),
+        text="表示:N",
+        color=alt.condition(alt.datum.アポ数 >= lead_monthly["アポ数"].median(), alt.value("white"), alt.value("#172b4d")),
+    )
+    st.altair_chart((heatmap + labels).properties(height=max(260, 42 * lead_monthly["リードソース"].nunique())), use_container_width=True)
 
 st.markdown("#### Pipeline案件")
 pipeline_choice = st.radio("Pipeline期間", pipeline_summary["期間"].tolist(), horizontal=True, label_visibility="collapsed")
