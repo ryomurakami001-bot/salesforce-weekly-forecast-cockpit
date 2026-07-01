@@ -140,14 +140,12 @@ period_specs = [("今月", current_period, False), ("来月", current_period + 1
 
 with top:
     st.subheader("今月の商談活動")
-    completed_ratio = activity["商談実施率"]
-    r_text = "－" if completed_ratio is None else f"{completed_ratio:.0f}%"
     x1, x2 = st.columns(2)
     x1.markdown(f'<div class="card"><div class="card-title">今月の商談予定<span class="period">{current_period}</span></div><div class="big">{activity["商談予定数"]}件</div><div class="sub">今月に初回商談日があり、_カード申込を除く</div></div>', unsafe_allow_html=True)
     with x1.popover("商談予定の対象案件を見る", use_container_width=True):
         scheduled_cols = [c for c in ["商談名", "商談MRR", "フェーズ", "初回商談日", "主リードソース", "次のステップ & 状況"] if c in scheduled_meeting_deals.columns]
         st.dataframe(scheduled_meeting_deals[scheduled_cols].sort_values("初回商談日"), use_container_width=True, hide_index=True)
-    x2.markdown(f'<div class="card"><div class="card-title">商談実施済み</div><div class="big good">{activity["商談実施済み数"]}件 <span style="font-size:1.25rem">（{r_text}）</span></div><div class="sub">初回商談日が本日以前で、_カード申込を除く</div></div>', unsafe_allow_html=True)
+    x2.markdown(f'<div class="card"><div class="card-title">商談実施済み</div><div class="big good">{activity["商談実施済み数"]}件</div><div class="sub">初回商談日が本日以前で、_カード申込を除く</div></div>', unsafe_allow_html=True)
     with x2.popover("商談実施済みの対象案件を見る", use_container_width=True):
         completed_cols = [c for c in ["商談名", "商談MRR", "フェーズ", "初回商談日", "主リードソース", "次のステップ & 状況"] if c in completed_meeting_deals.columns]
         completed_view = completed_meeting_deals[completed_cols].sort_values("初回商談日", ascending=False)
