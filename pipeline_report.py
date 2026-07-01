@@ -316,7 +316,7 @@ def calculate_pipeline_months(cleaned: pd.DataFrame, report_date: date, quarter:
     return pd.DataFrame(rows), pipeline
 
 
-def calculate_meeting_activity(cleaned: pd.DataFrame, report_date: date) -> dict[str, float | int]:
+def meeting_activity_deals(cleaned: pd.DataFrame, report_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
     month = pd.Timestamp(report_date).to_period("M")
     meeting_month = cleaned["初回商談日"].dt.to_period("M")
     meetings = cleaned[meeting_month == month].copy()
@@ -326,6 +326,11 @@ def calculate_meeting_activity(cleaned: pd.DataFrame, report_date: date) -> dict
     )
     lost = meetings[meetings["失注"] & not_card]
     valid = meetings[~meetings["失注"] & ~phase_one & not_card]
+    return valid, lost
+
+
+def calculate_meeting_activity(cleaned: pd.DataFrame, report_date: date) -> dict[str, float | int]:
+    valid, lost = meeting_activity_deals(cleaned, report_date)
     valid_count = int(len(valid))
     lost_count = int(len(lost))
     total = valid_count + lost_count
