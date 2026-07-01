@@ -281,7 +281,8 @@ def prepare_scenario_deals(cleaned: pd.DataFrame) -> pd.DataFrame:
 
 def calculate_pipeline(cleaned: pd.DataFrame, report_date: date, quarter: Optional[str] = None) -> dict[str, float | int]:
     """初回商談済みかつ失注していない案件をPipelineとして集計する。"""
-    pipeline = cleaned[cleaned["初回商談日"].notna() & ~cleaned["失注"] & (cleaned["商談MRR"] > 0)].copy()
+    phase_one = cleaned["フェーズ"].astype("string").str.match(r"^\s*(?:フェーズ\s*)?0?[1１](?:\D|$)", case=False, na=False)
+    pipeline = cleaned[cleaned["初回商談日"].notna() & ~cleaned["失注"] & ~phase_one & (cleaned["商談MRR"] > 0)].copy()
     close_period = pipeline["Close Date"].dt.to_period("M")
     current_period = pd.Timestamp(report_date).to_period("M")
     target_quarter = pd.Period(quarter, freq="Q") if quarter else current_period.asfreq("Q")
@@ -295,7 +296,8 @@ def calculate_pipeline(cleaned: pd.DataFrame, report_date: date, quarter: Option
 
 
 def calculate_pipeline_months(cleaned: pd.DataFrame, report_date: date, quarter: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    pipeline = cleaned[cleaned["初回商談日"].notna() & ~cleaned["失注"] & (cleaned["商談MRR"] > 0)].copy()
+    phase_one = cleaned["フェーズ"].astype("string").str.match(r"^\s*(?:フェーズ\s*)?0?[1１](?:\D|$)", case=False, na=False)
+    pipeline = cleaned[cleaned["初回商談日"].notna() & ~cleaned["失注"] & ~phase_one & (cleaned["商談MRR"] > 0)].copy()
     pipeline["月"] = pipeline["Close Date"].dt.to_period("M").astype("string")
     current = pd.Timestamp(report_date).to_period("M")
     labels = [("今月", current), ("来月", current + 1), ("再来月", current + 2)]
@@ -321,9 +323,11 @@ def calculate_meeting_activity(cleaned: pd.DataFrame, report_date: date) -> dict
     valid = meetings[~meetings["失注"]]
     total = int(len(meetings))
     valid_count = int(len(valid))
+    lost_count = int(meetings["失注"].sum())
     return {
         "商談件数": total,
         "有効商談数": valid_count,
+        "失注数": lost_count,
         "有効商談割合": valid_count / total * 100 if total else None,
     }
 
