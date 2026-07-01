@@ -1,19 +1,22 @@
 from datetime import date
 from html import escape
 from io import BytesIO
+import importlib
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
-from pipeline_report import (
-    build_report,
-    calculate_meeting_activity,
-    calculate_pipeline_months,
-    calculate_scenario_forecast,
-    export_excel,
-    prepare_scenario_deals,
-)
+import pipeline_report as _pipeline_report
+
+# Streamlit Cloud の常駐プロセスが古いモジュールを保持していても、最新版を読み直す。
+_pipeline_report = importlib.reload(_pipeline_report)
+build_report = _pipeline_report.build_report
+calculate_meeting_activity = _pipeline_report.calculate_meeting_activity
+calculate_pipeline_months = _pipeline_report.calculate_pipeline_months
+calculate_scenario_forecast = _pipeline_report.calculate_scenario_forecast
+export_excel = _pipeline_report.export_excel
+prepare_scenario_deals = _pipeline_report.prepare_scenario_deals
 
 
 st.set_page_config(page_title="Weekly Forecast", page_icon="◼", layout="wide")
