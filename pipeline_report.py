@@ -264,15 +264,17 @@ def build_report(path_or_buffer, today: Optional[date] = None) -> ReportResult:
     return ReportResult(raw, cleaned, monthly, focus, action, risks, _answer_cards(cleaned, today), warnings)
 
 
-def prepare_scenario_deals(cleaned: pd.DataFrame) -> pd.DataFrame:
+def prepare_scenario_deals(cleaned: pd.DataFrame, report_date: Optional[date] = None) -> pd.DataFrame:
     """案件単位で人が見込みを判断するための編集用テーブルを作る。"""
+    report_date = report_date or date.today()
     cols = [
         "商談名", "商談MRR", "Close Date", "注力案件", "フェーズ",
         "初回商談日", "次回アクション日", "次のステップ & 状況", "リスク理由",
     ]
     cols = [c for c in cols if c in cleaned.columns]
     # 初回商談を終えていない案件は着地シナリオに混ぜず、Pipelineとして別集計する。
-    eligible = cleaned["初回商談日"].notna() & ~cleaned["失注"] & (cleaned["商談MRR"] > 0)
+    meeting_completed = cleaned["初回商談日"].notna() & (cleaned["初回商談日"].dt.date <= report_date)
+    eligible = meeting_completed & ~cleaned["失注"] & (cleaned["商談MRR"] > 0)
     deals = cleaned.loc[eligible, cols].copy().sort_values(["Close Date", "商談MRR"], ascending=[True, False])
     deals.insert(0, "案件ID", deals.index.astype(str))
     deals.insert(1, "見込み区分", deals["注力案件"].map({1: "min", 0: "max"}).fillna("max"))
@@ -283,7 +285,8 @@ def prepare_scenario_deals(cleaned: pd.DataFrame) -> pd.DataFrame:
 def calculate_pipeline(cleaned: pd.DataFrame, report_date: date, quarter: Optional[str] = None) -> dict[str, float | int]:
     """初回商談済みかつ失注していない案件をPipelineとして集計する。"""
     phase_one = cleaned["フェーズ"].astype("string").str.match(r"^\s*(?:フェーズ\s*)?0?[1１](?:\D|$)", case=False, na=False)
-    pipeline = cleaned[cleaned["初回商談日"].notna() & ~cleaned["失注"] & ~phase_one & (cleaned["商談MRR"] > 0)].copy()
+    meeting_completed = cleaned["初回商談日"].notna() & (cleaned["初回商談日"].dt.date <= report_date)
+    pipeline = cleaned[meeting_completed & ~cleaned["失注"] & ~phase_one & (cleaned["商談MRR"] > 0)].copy()
     close_period = pipeline["Close Date"].dt.to_period("M")
     current_period = pd.Timestamp(report_date).to_period("M")
     target_quarter = pd.Period(quarter, freq="Q") if quarter else current_period.asfreq("Q")
@@ -298,7 +301,8 @@ def calculate_pipeline(cleaned: pd.DataFrame, report_date: date, quarter: Option
 
 def calculate_pipeline_months(cleaned: pd.DataFrame, report_date: date, quarter: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     phase_one = cleaned["フェーズ"].astype("string").str.match(r"^\s*(?:フェーズ\s*)?0?[1１](?:\D|$)", case=False, na=False)
-    pipeline = cleaned[cleaned["初回商談日"].notna() & ~cleaned["失注"] & ~phase_one & (cleaned["商談MRR"] > 0)].copy()
+    meeting_completed = cleaned["初回商談日"].notna() & (cleaned["初回商談日"].dt.date <= report_date)
+    pipeline = cleaned[meeting_completed & ~cleaned["失注"] & ~phase_one & (cleaned["商談MRR"] > 0)].copy()
     pipeline["月"] = pipeline["Close Date"].dt.to_period("M").astype("string")
     current = pd.Timestamp(report_date).to_period("M")
     labels = [("今月", current), ("来月", current + 1), ("再来月", current + 2)]
